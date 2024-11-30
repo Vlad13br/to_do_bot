@@ -1,40 +1,37 @@
 const TelegramBot = require("node-telegram-bot-api");
 const fs = require("fs");
+const schedule = require("node-schedule");
 require("dotenv").config();
 
 const token = process.env.TOKEN;
 
-// інстанс бота
 const bot = new TelegramBot(token, { polling: true });
 
 let tasks = [];
-let nextId = 1; // Змінна для ID завдання
+let nextId = 1;
 
-// Функція для збереження JSON
 function saveTasksToFile() {
   fs.writeFileSync("tasks.json", JSON.stringify(tasks, null, 2), "utf8");
 }
 
-// Функція для завантаження із JSON
 function loadTasksFromFile() {
   if (fs.existsSync("tasks.json")) {
     tasks = JSON.parse(fs.readFileSync("tasks.json", "utf8"));
-    nextId = tasks.length ? Math.max(tasks.map((task) => task.id)) + 1 : 1;
+    nextId = tasks.length ? Math.max(...tasks.map((task) => task.id)) + 1 : 1;
   }
 }
 
-// Завантажуємо завдання при старті бота
 loadTasksFromFile();
 
-function createTask(text) {
+function createTaskWithReminder(text, reminderTime) {
   return {
     id: nextId++,
-    text: text,
+    text,
     done: false,
+    reminderTime,
   };
 }
 
-// Функція для оновлення завдань
 function updateTasks(chatId) {
   if (tasks.length === 0) {
     bot.sendMessage(chatId, "У вас немає завдань.");
@@ -55,7 +52,6 @@ function updateTasks(chatId) {
   });
 }
 
-// Головне меню
 const mainMenu = {
   reply_markup: {
     keyboard: [[{ text: "Додати завдання" }], [{ text: "Мої завдання" }]],
@@ -64,36 +60,57 @@ const mainMenu = {
   },
 };
 
-// Команда для старту бота
 bot.onText(/\/start/, (msg) => {
   bot.sendMessage(msg.chat.id, "Привіт! Обери дію:", mainMenu);
 });
 
-// Обробка вибору кнопки "Мої завдання"
-bot.on("message", async (msg) => {
+function scheduleReminder(task, chatId) {
+  if (task.reminderTime) {
+    const reminderDate = new Date(task.reminderTime);
+    if (reminderDate > new Date()) {
+      schedule.scheduleJob(reminderDate, () => {
+        bot.sendMessage(chatId, `⏰ Нагадування про завдання: "${task.text}"`);
+      });
+    }
+  }
+}
+
+bot.on("message", (msg) => {
   const chatId = msg.chat.id;
 
-  if (msg.text === "Мої завдання") {
-    if (tasks.length === 0) {
-      bot.sendMessage(chatId, "У вас немає завдань.");
-    } else {
-      updateTasks(chatId);
-    }
-  } else if (msg.text === "Додати завдання") {
+  if (msg.text === "Додати завдання") {
     bot.sendMessage(chatId, "Введіть текст завдання:");
     bot.once("message", (msg) => {
       const taskText = msg.text;
-      const newTask = createTask(taskText);
-      tasks.push(newTask);
 
-      bot.sendMessage(chatId, `Завдання додано: "${taskText}".`);
-      saveTasksToFile();
-      updateTasks(chatId);
+      bot.sendMessage(
+        chatId,
+        "Введіть дату та час нагадування (YYYY-MM-DD HH:mm):"
+      );
+      bot.once("message", (msg) => {
+        const reminderTime = msg.text;
+
+        // Перевірка на правильність формату дати
+        if (isNaN(Date.parse(reminderTime))) {
+          bot.sendMessage(chatId, "Невірний формат дати. Спробуйте ще раз.");
+          return;
+        }
+
+        const newTask = createTaskWithReminder(taskText, reminderTime);
+        tasks.push(newTask);
+
+        saveTasksToFile();
+        scheduleReminder(newTask, chatId);
+
+        bot.sendMessage(chatId, `Завдання додано: "${taskText}".`);
+        updateTasks(chatId);
+      });
     });
+  } else if (msg.text === "Мої завдання") {
+    updateTasks(chatId);
   }
 });
 
-// Обробка кнопок завершення завдань
 bot.on("callback_query", async (query) => {
   const chatId = query.message.chat.id;
   const action = query.data;
