@@ -11,13 +11,26 @@ let tasks = [];
 let nextId = 1;
 
 function saveTasksToFile() {
-  fs.writeFileSync("tasks.json", JSON.stringify(tasks, null, 2), "utf8");
+  const tasksToSave = tasks.map(({ reminderJob, ...rest }) => rest);
+  fs.writeFileSync("tasks.json", JSON.stringify(tasksToSave, null, 2), "utf8");
 }
 
 function loadTasksFromFile() {
   if (fs.existsSync("tasks.json")) {
-    tasks = JSON.parse(fs.readFileSync("tasks.json", "utf8"));
+    const savedTasks = JSON.parse(fs.readFileSync("tasks.json", "utf8"));
+    tasks = savedTasks.map((task) => ({
+      ...task,
+      reminderJob: null,
+    }));
+
     nextId = tasks.length ? Math.max(...tasks.map((task) => task.id)) + 1 : 1;
+
+    tasks.forEach((task) => {
+      if (task.reminderTime) {
+        const chatId = task.chatId;
+        scheduleReminder(task, chatId);
+      }
+    });
   }
 }
 
@@ -29,6 +42,7 @@ function createTaskWithReminder(text, reminderTime) {
     text,
     done: false,
     reminderTime,
+    reminderJob: null,
   };
 }
 
@@ -68,7 +82,7 @@ function scheduleReminder(task, chatId) {
   if (task.reminderTime) {
     const reminderDate = new Date(task.reminderTime);
     if (reminderDate > new Date()) {
-      schedule.scheduleJob(reminderDate, () => {
+      task.reminderJob = schedule.scheduleJob(reminderDate, () => {
         bot.sendMessage(chatId, `⏰ Нагадування про завдання: "${task.text}"`);
       });
     }
@@ -83,27 +97,15 @@ bot.on("message", (msg) => {
     bot.once("message", (msg) => {
       const taskText = msg.text;
 
-      bot.sendMessage(
-        chatId,
-        "Введіть дату та час нагадування (YYYY-MM-DD HH:mm):"
-      );
-      bot.once("message", (msg) => {
-        const reminderTime = msg.text;
-
-        // Перевірка на правильність формату дати
-        if (isNaN(Date.parse(reminderTime))) {
-          bot.sendMessage(chatId, "Невірний формат дати. Спробуйте ще раз.");
-          return;
-        }
-
-        const newTask = createTaskWithReminder(taskText, reminderTime);
-        tasks.push(newTask);
-
-        saveTasksToFile();
-        scheduleReminder(newTask, chatId);
-
-        bot.sendMessage(chatId, `Завдання додано: "${taskText}".`);
-        updateTasks(chatId);
+      bot.sendMessage(chatId, "Чи хочете ви додати нагадування?", {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: "Так", callback_data: `reminder_yes_${taskText}` },
+              { text: "Ні", callback_data: `reminder_no_${taskText}` },
+            ],
+          ],
+        },
       });
     });
   } else if (msg.text === "Мої завдання") {
@@ -115,23 +117,100 @@ bot.on("callback_query", async (query) => {
   const chatId = query.message.chat.id;
   const action = query.data;
 
-  if (action.startsWith("done_")) {
-    const taskId = parseInt(action.split("_")[1], 10);
+  if (action.startsWith("reminder_yes_")) {
+    let taskText = action.replace("reminder_yes_", "");
+    bot.sendMessage(chatId, "Введіть рік нагадування (YYYY):");
 
-    const taskIndex = tasks.findIndex((task) => task.id === taskId);
+    bot.once("message", (msg) => {
+      const year = msg.text;
 
-    if (taskIndex >= 0) {
-      const completedTask = tasks[taskIndex];
+      if (isNaN(year) || year.length !== 4) {
+        bot.sendMessage(chatId, "Невірний рік. Спробуйте ще раз.");
+        return;
+      }
+
+      bot.sendMessage(chatId, "Введіть місяць (MM):");
+
+      bot.once("message", (msg) => {
+        const month = msg.text;
+
+        if (isNaN(month) || month < 1 || month > 12) {
+          bot.sendMessage(chatId, "Невірний місяць. Спробуйте ще раз.");
+          return;
+        }
+
+        bot.sendMessage(chatId, "Введіть день (DD):");
+
+        bot.once("message", (msg) => {
+          const day = msg.text;
+
+          if (isNaN(day) || day < 1 || day > 31) {
+            bot.sendMessage(chatId, "Невірний день. Спробуйте ще раз.");
+            return;
+          }
+
+          bot.sendMessage(chatId, "Введіть годину (HH):");
+
+          bot.once("message", (msg) => {
+            const hour = msg.text;
+
+            if (isNaN(hour) || hour < 0 || hour > 23) {
+              bot.sendMessage(chatId, "Невірна година. Спробуйте ще раз.");
+              return;
+            }
+
+            bot.sendMessage(chatId, "Введіть хвилини (MM):");
+
+            bot.once("message", (msg) => {
+              const minute = msg.text;
+
+              if (isNaN(minute) || minute < 0 || minute > 59) {
+                bot.sendMessage(chatId, "Невірні хвилини. Спробуйте ще раз.");
+                return;
+              }
+
+              const reminderTime = `${year}-${month}-${day} ${hour}:${minute}`;
+              const newTask = createTaskWithReminder(taskText, reminderTime);
+              tasks.push(newTask);
+
+              saveTasksToFile();
+              scheduleReminder(newTask, chatId);
+
+              bot.sendMessage(
+                chatId,
+                `Завдання додано: "${taskText}" з нагадуванням.`
+              );
+              updateTasks(chatId);
+            });
+          });
+        });
+      });
+    });
+  } else if (action.startsWith("done_")) {
+    const taskId = parseInt(action.replace("done_", ""), 10);
+    const taskIndex = tasks.findIndex((t) => t.id === taskId);
+
+    if (taskIndex !== -1) {
+      const task = tasks[taskIndex];
       tasks.splice(taskIndex, 1);
-
       saveTasksToFile();
-      await bot.sendMessage(
+
+      bot.sendMessage(
         chatId,
-        `Завдання "${completedTask.text}" виконано!`
+        `Завдання "${task.text}" виконане та видалене ✅.`
       );
       updateTasks(chatId);
     } else {
-      bot.sendMessage(chatId, `Невірний номер завдання.`);
+      bot.sendMessage(chatId, "Завдання не знайдено.");
     }
+  } else if (action.startsWith("reminder_no_")) {
+    const taskText = action.replace("reminder_no_", "");
+    const newTask = createTaskWithReminder(taskText, null);
+    tasks.push(newTask);
+
+    saveTasksToFile();
+
+    bot.sendMessage(chatId, `Завдання додано: "${taskText}".`);
+    updateTasks(chatId);
   }
 });
