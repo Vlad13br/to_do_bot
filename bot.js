@@ -9,6 +9,7 @@ const bot = new TelegramBot(token, { polling: true });
 
 let tasks = [];
 let nextId = 1;
+const userStates = {};
 
 async function saveTasksToFile() {
   const tasksToSave = tasks.map(({ reminderJob, ...rest }) => rest);
@@ -120,23 +121,27 @@ function scheduleReminder(task, chatId) {
 
 bot.on("message", (msg) => {
   const chatId = msg.chat.id;
+  if (userStates[chatId]?.state === "ADDING_TASK") {
+    const taskText = msg.text;
+
+    bot.sendMessage(chatId, "Чи хочете ви додати нагадування?", {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "Так", callback_data: `reminder_yes_${taskText}` },
+            { text: "Ні", callback_data: `reminder_no_${taskText}` },
+          ],
+        ],
+      },
+    });
+
+    userStates[chatId] = null;
+    return;
+  }
 
   if (msg.text === "Додати завдання") {
+    userStates[chatId] = { state: "ADDING_TASK" };
     bot.sendMessage(chatId, "Введіть текст завдання:");
-    bot.once("message", (msg) => {
-      const taskText = msg.text;
-
-      bot.sendMessage(chatId, "Чи хочете ви додати нагадування?", {
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: "Так", callback_data: `reminder_yes_${taskText}` },
-              { text: "Ні", callback_data: `reminder_no_${taskText}` },
-            ],
-          ],
-        },
-      });
-    });
   } else if (msg.text === "Мої завдання") {
     updateTasks(chatId, 1);
   }
