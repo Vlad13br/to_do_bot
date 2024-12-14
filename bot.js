@@ -10,12 +10,12 @@ const bot = new TelegramBot(token, { polling: true });
 let tasks = [];
 let nextId = 1;
 
-function saveTasksToFile() {
+async function saveTasksToFile() {
   const tasksToSave = tasks.map(({ reminderJob, ...rest }) => rest);
   fs.writeFileSync("tasks.json", JSON.stringify(tasksToSave, null, 2), "utf8");
 }
 
-function loadTasksFromFile() {
+async function loadTasksFromFile() {
   if (fs.existsSync("tasks.json")) {
     const savedTasks = JSON.parse(fs.readFileSync("tasks.json", "utf8"));
     tasks = savedTasks.map((task) => ({
@@ -46,22 +46,46 @@ function createTaskWithReminder(text, reminderTime) {
   };
 }
 
-function updateTasks(chatId) {
+function updateTasks(chatId, page = 1, pageSize = 5) {
+  const totalPages = Math.ceil(tasks.length / pageSize);
   if (tasks.length === 0) {
     bot.sendMessage(chatId, "У вас немає завдань.");
     return;
   }
 
-  const taskButtons = tasks.map((task) => [
+  if (page < 1 || page > totalPages) {
+    bot.sendMessage(chatId, "Невірна сторінка.");
+    return;
+  }
+
+  const start = (page - 1) * pageSize;
+  const end = start + pageSize;
+  const tasksToShow = tasks.slice(start, end);
+
+  const taskButtons = tasksToShow.map((task) => [
     {
       text: `${task.id}. ${task.text} - ${task.done ? "✅" : "❌"}`,
       callback_data: `done_${task.id}`,
     },
   ]);
 
-  bot.sendMessage(chatId, "Ваші завдання:", {
+  const paginationButtons = [];
+  if (page > 1) {
+    paginationButtons.push({
+      text: "⬅️ Попередня",
+      callback_data: `page_${page - 1}`,
+    });
+  }
+  if (page < totalPages) {
+    paginationButtons.push({
+      text: "➡️ Наступна",
+      callback_data: `page_${page + 1}`,
+    });
+  }
+
+  bot.sendMessage(chatId, `Ваші завдання (сторінка ${page} з ${totalPages}):`, {
     reply_markup: {
-      inline_keyboard: taskButtons,
+      inline_keyboard: [...taskButtons, paginationButtons],
     },
   });
 }
@@ -81,6 +105,11 @@ bot.onText(/\/start/, (msg) => {
 function scheduleReminder(task, chatId) {
   if (task.reminderTime) {
     const reminderDate = new Date(task.reminderTime);
+    if (reminderDate <= new Date()) {
+      bot.sendMessage(chatId, "Дата нагадування має бути у майбутньому.");
+      return;
+    }
+
     if (reminderDate > new Date()) {
       task.reminderJob = schedule.scheduleJob(reminderDate, () => {
         bot.sendMessage(chatId, `⏰ Нагадування про завдання: "${task.text}"`);
@@ -109,7 +138,7 @@ bot.on("message", (msg) => {
       });
     });
   } else if (msg.text === "Мої завдання") {
-    updateTasks(chatId);
+    updateTasks(chatId, 1);
   }
 });
 
@@ -212,5 +241,8 @@ bot.on("callback_query", async (query) => {
 
     bot.sendMessage(chatId, `Завдання додано: "${taskText}".`);
     updateTasks(chatId);
+  } else if (action.startsWith("page_")) {
+    const page = parseInt(action.replace("page_", ""), 10);
+    updateTasks(chatId, page);
   }
 });
